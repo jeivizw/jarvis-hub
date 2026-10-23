@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JARVIS HUD - Mark 42 Edition (Scroll System)</title>
+    
+    <!-- MediaPipe AI -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <!-- Leaflet.js para Mapa Real -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
+
+        body, html {
+            margin: 0; padding: 0; width: 100vw; height: 100vh;
+            background-color: #000; color: #0df;
+            font-family: 'Share Tech Mono', monospace;
+            overflow: hidden; user-select: none;
+        }
+
+        .video-bg {
+            position: absolute; top: 0; left: 0; width: 100vw; height: 100vh;
+            object-fit: fill; z-index: 0; transform: scaleX(-1);
+        }
+
+        .ai-canvas {
+            position: absolute; top: 0; left: 0; width: 100vw; height: 100vh;
+            z-index: 10; pointer-events: none; transform: scaleX(-1);
+            object-fit: fill;
+        }
+
+        /* Janelas e Painéis */
+        .hud-window {
+            position: absolute; width: 420px; background: rgba(0, 15, 30, 0.88);
+            border: 1px solid #0df; border-radius: 8px;
+            z-index: 20; display: flex; flex-direction: column;
+            box-shadow: 0 0 15px rgba(0, 221, 255, 0.2);
+            will-change: transform;
+        }
+
+        .hud-header {
+            background: rgba(0, 221, 255, 0.2); border-bottom: 1px solid #0df;
+            padding: 8px 15px; font-size: 14px; font-weight: bold;
+            display: flex; justify-content: space-between;
+            text-shadow: 0 0 5px #0df;
+            cursor: grab;
+        }
+
+        .hud-content { padding: 15px; font-size: 14px; }
+
+        /* Cursores Suaves */
+        .virtual-cursor {
+            position: absolute; width: 22px; height: 22px;
+            border: 2px solid #fff; border-radius: 50%;
+            pointer-events: none; z-index: 9999;
+            transform: translate3d(-50%, -50%, 0);
+            box-shadow: 0 0 12px #0df; 
+            will-change: transform, left, top;
+        }
+        
+        .virtual-cursor.pinching { 
+            background: #0df; transform: translate3d(-50%, -50%, 0) scale(0.65); 
+            border-color: #0df;
+        }
+
+        iframe { border: 1px solid rgba(0, 221, 255, 0.3); width: 100%; height: 200px; border-radius: 4px; pointer-events: none; }
+        
+        .media-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-top: 10px; }
+        
+        button {
+            padding: 8px; background: rgba(0, 221, 255, 0.1);
+            border: 1px solid #0df; color: #0df; font-family: inherit; cursor: pointer;
+            font-size: 11px; text-transform: uppercase; transition: 0.15s;
+        }
+        button:hover { background: #0df; color: #000; box-shadow: 0 0 10px #0df; }
+
+        .btn-play-pause { grid-column: span 2; background: rgba(255, 50, 50, 0.15); border-color: #ff3366; color: #ff3366; font-weight: bold; }
+        .btn-play-pause:hover { background: #ff3366; color: #000; box-shadow: 0 0 10px #ff3366; }
+
+        /* Barras de Diagnóstico */
+        .diagnostics-bar { width: 100%; height: 8px; background: rgba(0,255,255,0.1); margin-top: 5px; margin-bottom: 12px; overflow: hidden; border-radius: 4px; }
+        .diagnostics-fill { height: 100%; background: #0df; width: 0%; transition: width 0.3s ease-out; }
+        .text-highlight { color: #fff; font-weight: bold; text-shadow: 0 0 5px #fff; }
+
+        .search-container { display: flex; gap: 5px; margin-bottom: 10px; }
+        input[type="text"] {
+            flex: 1; background: rgba(0,0,0,0.6); border: 1px solid #0df; color: #0df; padding: 8px; font-family: inherit; outline: none;
+        }
+        
+        /* Sistema de Rolagem (Scroll) Customizado */
+        .scrollable-content {
+            height: 180px; overflow-y: auto; padding-right: 5px; color: #ccc; font-size: 12px;
+            line-height: 1.5; border: 1px solid rgba(0, 221, 255, 0.3); border-radius: 4px; padding: 10px;
+        }
+        .scrollable-content::-webkit-scrollbar { width: 6px; }
+        .scrollable-content::-webkit-scrollbar-track { background: rgba(0, 221, 255, 0.05); border-radius: 4px; }
+        .scrollable-content::-webkit-scrollbar-thumb { background: #0df; border-radius: 4px; box-shadow: 0 0 5px #0df; }
+
+        #map-container {
+            width: 100%; height: 180px; border: 1px solid #0df; border-radius: 4px;
+            filter: invert(100%) hue-rotate(170deg) brightness(95%) contrast(120%);
+        }
+
+    </style>
+</head>
+<body>
+
+    <video class="video-bg" id="webcam" autoplay playsinline></video>
+    <canvas class="ai-canvas" id="canvas"></canvas>
+
+    <div class="virtual-cursor" id="cursor-left" style="display:none;"></div>
+    <div class="virtual-cursor" id="cursor-right" style="display:none;"></div>
+
+    <!-- PAINEL 1: Hardware Specs -->
+    <div class="hud-window click-target" id="win-sys" style="transform: translate3d(20px, 20px, 0);">
+        <div class="hud-header"><span>SYS_DIAGNOSTICS</span><span>[ON]</span></div>
+        <div class="hud-content">
+            <div id="hw-info" style="font-size: 12px; line-height: 1.6;">Loading Hardware...</div>
+            <hr style="border-color: rgba(0,221,255,0.3); margin: 12px 0;">
+            <div>CPU USAGE: <span id="cpu-val" class="text-highlight">0</span>%</div>
+            <div class="diagnostics-bar"><div class="diagnostics-fill" id="cpu-bar"></div></div>
+            <div>GPU TEMP: <span id="temp-val" class="text-highlight">0</span>°C</div>
+            <div class="diagnostics-bar"><div class="diagnostics-fill" id="temp-bar" style="background: #ff3366;"></div></div>
+        </div>
+    </div>
+
+    <!-- PAINEL 2: Media Link -->
+    <div class="hud-window click-target" id="win-media" style="transform: translate3d(460px, 20px, 0);">
+        <div class="hud-header"><span>MEDIA_LINK</span><span>[YOUTUBE]</span></div>
+        <div class="hud-content">
+            <iframe id="yt-player" src="https://www.youtube.com/embed/vRqJbpR5Vso?enablejsapi=1&autoplay=1&mute=1" allow="autoplay; encrypted-media"></iframe>
+            <div class="media-controls">
+                <button class="btn-play-pause" onclick="toggleYT()">⏯ PLAY / PAUSE</button>
+                <button onclick="changeVideo('https://www.youtube.com/embed/vRqJbpR5Vso?enablejsapi=1&autoplay=1')">THAT ONE SONG</button>
+                <button onclick="changeVideo('https://www.youtube.com/embed/KAE5ymVLmZg?enablejsapi=1&autoplay=1')">IRON MAN 1</button>
+                <button onclick="changeVideo('https://www.youtube.com/embed/lR7t0CXWwq8?enablejsapi=1&autoplay=1')">TALK ABOUT IT</button>
+                <button onclick="changeVideo('https://www.youtube.com/embed/LoLx5KFzkN0?enablejsapi=1&autoplay=1')">POSTING TONIGHT</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- PAINEL 3: Pesquisa Interna Nativa -->
+    <div class="hud-window click-target" id="win-search" style="transform: translate3d(20px, 320px, 0); width: 420px;">
+        <div class="hud-header"><span>GLOBAL_DATABASE</span><span>[SEARCH]</span></div>
+        <div class="hud-content">
+            <div class="search-container">
+                <input type="text" id="search-input" placeholder="Pesquisar na Wikipedia...">
+                <button onclick="doSearch()">BUSCAR</button>
+            </div>
+            <div id="search-results" class="scrollable-content">
+                Aguardando entrada de dados do usuário...
+            </div>
+        </div>
+    </div>
+
+    <!-- PAINEL 4: Local Scanner -->
+    <div class="hud-window click-target" id="win-radar" style="transform: translate3d(460px, 350px, 0); width: 420px;">
+        <div class="hud-header"><span>GEOLOCATION_RADAR</span><span>[GPS_GPS]</span></div>
+        <div class="hud-content">
+            <div id="map-container"></div>
+            <div id="geo-status" style="margin-top: 8px; font-size: 11px; color: rgba(0,221,255,0.8);">
+                Buscando coordenadas de satélite...
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('webcam');
+        const canvasElement = document.getElementById('canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const cursors = { Left: document.getElementById('cursor-left'), Right: document.getElementById('cursor-right') };
+
+        const pointerState = { 
+            Left: { x: 0, y: 0, targetX: 0, targetY: 0, isPinching: false, draggedWindow: null, scrollTarget: null, startY: 0, startScrollTop: 0, offsetX: 0, offsetY: 0 },
+            Right: { x: 0, y: 0, targetX: 0, targetY: 0, isPinching: false, draggedWindow: null, scrollTarget: null, startY: 0, startScrollTop: 0, offsetX: 0, offsetY: 0 }
+        };
+
+        let canvasW = window.innerWidth;
+        let canvasH = window.innerHeight;
+
+        function resizeCanvas() {
+            canvasW = window.innerWidth;
+            canvasH = window.innerHeight;
+            canvasElement.width = canvasW;
+            canvasElement.height = canvasH;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        let map, marker;
+        function initRealMap() {
+            map = L.map('map-container', { zoomControl: false, attributionControl: false }).setView([-23.5015, -47.4581], 13);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+            if ("geolocation" in navigator) {
+                navigator.geolocation.getCurrentPosition((position) => {
+                    const lat = position.coords.latitude;
+                    const lon = position.coords.longitude;
+                    map.setView([lat, lon], 15);
+                    marker = L.marker([lat, lon]).addTo(map);
+                    document.getElementById('geo-status').innerHTML = `LAT: <span class="text-highlight">${lat.toFixed(4)}</span> | LON: <span class="text-highlight">${lon.toFixed(4)}</span> [SINAL FORTE]`;
+                }, () => {
+                    document.getElementById('geo-status').innerText = "Acesso ao GPS negado. Usando posição padrão.";
+                });
+            }
+        }
+        initRealMap();
+
+        let isPlaying = true;
+        window.changeVideo = function(url) { document.getElementById('yt-player').src = url; isPlaying = true; };
+        window.toggleYT = function() {
+            const iframe = document.getElementById('yt-player').contentWindow;
+            iframe.postMessage(isPlaying ? '{"event":"command","func":"pauseVideo","args":""}' : '{"event":"command","func":"playVideo","args":""}', '*');
+            isPlaying = !isPlaying;
+        };
+
+        window.doSearch = async function(customQuery) {
+            const query = customQuery || document.getElementById('search-input').value || 'Homem de Ferro';
+            const resDiv = document.getElementById('search-results');
+            resDiv.innerHTML = "<span style='color:#0df'>Buscando arquivos na Wikipedia...</span>";
+            
+            try {
+                const url = `https://pt.wikipedia.org/w/api.php?action=query&format=json&origin=*&prop=extracts&exintro=1&redirects=1&generator=search&gsrsearch=${encodeURIComponent(query)}&gsrlimit=1`;
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (!data.query || !data.query.pages) {
+                    const fallbackUrl = `https://pt.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=1&redirects=1&titles=${encodeURIComponent(query)}&format=json&origin=*`;
+                    const fbResponse = await fetch(fallbackUrl);
+                    const fbData = await fbResponse.json();
+                    const fbPages = fbData.query ? fbData.query.pages : null;
+                    const fbPageId = fbPages ? Object.keys(fbPages)[0] : -1;
+                    
+                    if (!fbPages || fbPageId == -1) {
+                        resDiv.innerHTML = "<span style='color:#ff3366'>Nenhum registro encontrado para '" + query + "'.</span>";
+                        return;
+                    }
+                    resDiv.innerHTML = `<h3 style='margin-top:0; color:#fff;'>${fbPages[fbPageId].title}</h3>` + fbPages[fbPageId].extract;
+                    return;
+                }
+
+                const pages = data.query.pages;
+                const pageId = Object.keys(pages)[0];
+                const page = pages[pageId];
+
+                if (!page || pageId == -1) {
+                    resDiv.innerHTML = "<span style='color:#ff3366'>Nenhum registro encontrado.</span>";
+                } else {
+                    resDiv.innerHTML = `<h3 style='margin-top:0; color:#fff;'>${page.title}</h3>` + page.extract;
+                }
+            } catch (e) {
+                resDiv.innerHTML = "<span style='color:#ff3366'>Falha de comunicação com a rede da Wikipedia.</span>";
+            }
+        };
+
+        setTimeout(() => doSearch('Homem de Ferro'), 1000);
+
+        function getHardwareDetails() {
+            let gpuName = "Aceleração Nativa";
+            try {
+                const canvasGL = document.createElement('canvas');
+                const gl = canvasGL.getContext('webgl');
+                if (gl) {
+                    const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+                    if (debugInfo) gpuName = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
+                }
+            } catch(e) {}
+            return `OS: ${navigator.platform}<br>CPU THREADS: <span class="text-highlight">${navigator.hardwareConcurrency || 8}</span><br>RAM: <span class="text-highlight">${navigator.deviceMemory || 8} GB</span><br>GPU: <span class="text-highlight">${gpuName}</span>`;
+        }
+        document.getElementById('hw-info').innerHTML = getHardwareDetails();
+
+        setInterval(() => {
+            const cpu = Math.floor(Math.random() * 20) + 5; 
+            const temp = Math.floor(Math.random() * 15) + 40;
+            document.getElementById('cpu-val').innerText = cpu;
+            document.getElementById('cpu-bar').style.width = cpu + '%';
+            document.getElementById('temp-val').innerText = temp;
+            document.getElementById('temp-bar').style.width = temp + '%';
+        }, 1500);
+
+        function isHandFullyOpen(landmarks) {
+            const wrist = landmarks[0];
+            const getDist = (l1, l2) => Math.hypot(l1.x - l2.x, l1.y - l2.y);
+            return getDist(wrist, landmarks[8]) > getDist(wrist, landmarks[5]) * 1.25 &&
+                   getDist(wrist, landmarks[12]) > getDist(wrist, landmarks[9]) * 1.25;
+        }
+
+        function updateSmoothCursors() {
+            ['Left', 'Right'].forEach(h => {
+                const state = pointerState[h];
+                const cursor = cursors[h];
+
+                state.x += (state.targetX - state.x) * 0.45;
+                state.y += (state.targetY - state.y) * 0.45;
+
+                cursor.style.left = `${state.x}px`;
+                cursor.style.top = `${state.y}px`;
+
+                if (state.isPinching) {
+                    if (state.draggedWindow) {
+                        state.draggedWindow.style.transform = `translate3d(${state.x - state.offsetX}px, ${state.y - state.offsetY}px, 0)`;
+                    } else if (state.scrollTarget) {
+                        const deltaY = state.y - state.startY;
+                        state.scrollTarget.scrollTop = state.startScrollTop - deltaY;
+                    }
+                }
+            });
+            requestAnimationFrame(updateSmoothCursors);
+        }
+        requestAnimationFrame(updateSmoothCursors);
+
+        function onResults(results) {
+            canvasCtx.clearRect(0, 0, canvasW, canvasH);
+            ['Left', 'Right'].forEach(h => cursors[h].style.display = 'none');
+
+            if (results.multiHandLandmarks) {
+                results.multiHandLandmarks.forEach((landmarks, index) => {
+                    const handedness = results.multiHandedness[index].label;
+                    const cursor = cursors[handedness];
+                    const state = pointerState[handedness];
+
+                    const indexTip = landmarks[8];
+                    const thumbTip = landmarks[4];
+                    const wrist = landmarks[0];
+                    const midFingerKnuckle = landmarks[9];
+
+                    state.targetX = (1 - indexTip.x) * canvasW;
+                    state.targetY = indexTip.y * canvasH;
+                    cursor.style.display = 'block';
+
+                    if (isHandFullyOpen(landmarks)) {
+                        const centerX = (wrist.x + midFingerKnuckle.x) / 2;
+                        const centerY = (wrist.y + midFingerKnuckle.y) / 2;
+                        const pX = centerX * canvasW;
+                        const pY = centerY * canvasH;
+                        
+                        const gradient = canvasCtx.createRadialGradient(pX, pY, 5, pX, pY, 120);
+                        gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+                        gradient.addColorStop(0.2, 'rgba(0, 255, 255, 0.8)');
+                        gradient.addColorStop(1, 'rgba(0, 200, 255, 0)');
+
+                        canvasCtx.beginPath();
+                        canvasCtx.arc(pX, pY, 120, 0, 2 * Math.PI);
+                        canvasCtx.fillStyle = gradient;
+                        canvasCtx.fill();
+
+                        drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#B30000', lineWidth: 4});
+                        drawLandmarks(canvasCtx, landmarks, {color: '#FFD700', lineWidth: 1.5, radius: 3});
+                    }
+
+                    const thumbX = (1 - thumbTip.x) * canvasW;
+                    const thumbY = thumbTip.y * canvasH;
+                    const pinchDistPx = Math.hypot(state.targetX - thumbX, state.targetY - thumbY);
+                    
+                    const pinchThreshold = state.isPinching ? 55 : 32;
+                    const isPinchingNow = pinchDistPx < pinchThreshold; 
+
+                    if (isPinchingNow && !state.isPinching) {
+                        state.isPinching = true;
+                        cursor.classList.add('pinching');
+                        
+                        cursor.style.display = 'none';
+                        const elementAtPoint = document.elementFromPoint(state.x, state.y);
+                        cursor.style.display = 'block';
+
+                        if (elementAtPoint) {
+                            if (elementAtPoint.tagName === 'BUTTON' || elementAtPoint.tagName === 'INPUT' || elementAtPoint.onclick) {
+                                elementAtPoint.click();
+                                if (elementAtPoint.tagName === 'INPUT') elementAtPoint.focus();
+                            }
+                            
+                            const scrollable = elementAtPoint.closest('.scrollable-content');
+                            const windowElem = elementAtPoint.closest('.hud-window');
+
+                            if (windowElem && elementAtPoint.closest('.hud-header')) {
+                                document.querySelectorAll('.hud-window').forEach(w => w.style.zIndex = "20");
+                                windowElem.style.zIndex = "30";
+
+                                state.draggedWindow = windowElem;
+                                const style = window.getComputedStyle(windowElem);
+                                const matrix = new WebKitCSSMatrix(style.transform);
+                                state.offsetX = state.x - matrix.m41;
+                                state.offsetY = state.y - matrix.m42;
+                            } else if (scrollable) {
+                                state.scrollTarget = scrollable;
+                                state.startY = state.y;
+                                state.startScrollTop = scrollable.scrollTop;
+                            }
+                        }
+                    } else if (!isPinchingNow && state.isPinching) {
+                        state.isPinching = false;
+                        state.draggedWindow = null;
+                        state.scrollTarget = null;
+                        cursor.classList.remove('pinching');
+                    }
+                });
+            }
+        }
+
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({ maxNumHands: 2, modelComplexity: 0, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+        hands.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 1280, height: 720
+        });
+        camera.start();
+    </script>
+</body>
+</html>
